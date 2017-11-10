@@ -5,7 +5,7 @@ Data structures and runtimes for efficient timer management.
 
 ## References
 
-* tokio-timer: http://www.bittorrent.org/beps/bep_0000.html
+* tokio-timer: https://github.com/tokio-rs/tokio-timer
 
 ## License
 
