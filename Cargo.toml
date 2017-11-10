@@ -1,15 +1,25 @@
 [package]
-name = "pendulum"
-version = "0.1.0"
-authors = ["GGist <amiller4421@gmail.com>"]
+name          = "pendulum"
+version       = "0.1.0"
+description   = "Hash timer wheel with various runtimes"
+
+authors       = ["Andrew <amiller4421@gmail.com>"]
+
+homepage      = "https://github.com/GGist/pendulum-rs"
+repository    = "https://github.com/GGist/pendulum-rs"
+documentation = "https://docs.rs/pendulum/"
+
+keywords      = ["timer", "timeout"]
+
+license       = "MIT/Apache-2.0"
 
 [features]
-default = ["future"]
-future  = ["crossbeam", "futures"]
+default       = ["future"]
+future        = ["crossbeam", "futures"]
 
 [dependencies]
-log         = "0.3"
-slab        = "0.4"
+log           = "0.3"
+slab          = "0.4"
 
-crossbeam   = { version = "0.3", optional = true }
-futures     = { version = "0.1", optional = true }
+crossbeam     = { version = "0.3", optional = true }
+futures       = { version = "0.1", optional = true }
