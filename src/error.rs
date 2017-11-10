@@ -8,6 +8,7 @@ use std::fmt::Formatter;
 pub type PendulumResult<T1, T2> = Result<T1, PendulumError<T2>>;
 
 /// Error type for `Pendulum` operations.
+#[derive(Debug)]
 pub struct PendulumError<T> {
     item: T,
     kind: PendulumErrorKind
@@ -32,12 +33,6 @@ impl<T> PendulumError<T> {
     /// Break the error down into its parts.
     pub fn into_parts(self) -> (T, PendulumErrorKind) {
         (self.item, self.kind)
-    }
-}
-
-impl<T> Debug for PendulumError<T> where T: Debug {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        f.write_fmt(format_args!("PendulumError {{ item: {:?}, kind: {:?} }}", self.item, self.kind))
     }
 }
 
