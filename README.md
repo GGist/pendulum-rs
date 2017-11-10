@@ -1,5 +1,5 @@
 # Pendulum
-[![Build Status](https://travis-ci.org/GGist/pendulum-rs.svg?branch=master)](https://travis-ci.org/GGist/bip-rs) [![Build status](https://ci.appveyor.com/api/projects/status/muiqrh76k5hoir0s/branch/master?svg=true)](https://ci.appveyor.com/project/GGist/pendulum-rs/branch/master)[![Documentation](https://docs.rs/pendulum/badge.svg)](https://docs.rs/pendulum)
+[![Build Status](https://travis-ci.org/GGist/pendulum-rs.svg?branch=master)](https://travis-ci.org/GGist/bip-rs) [![Build status](https://ci.appveyor.com/api/projects/status/muiqrh76k5hoir0s/branch/master?svg=true)](https://ci.appveyor.com/project/GGist/pendulum-rs/branch/master) [![Documentation](https://docs.rs/pendulum/badge.svg)](https://docs.rs/pendulum)
 
 Data structures and runtimes for efficient timer management.
 
