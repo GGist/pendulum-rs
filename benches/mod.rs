@@ -12,6 +12,17 @@ mod benches {
         use test::Bencher;
 
         #[bench]
+        fn bench_insert_single_one_second_timeout(b: &mut Bencher) {
+            let mut pendulum = PendulumBuilder::default()
+                .build();
+
+            b.iter(|| {
+                let token = pendulum.insert_timeout(Duration::new(1, 0), ()).unwrap();
+                pendulum.remove_timeout(token).unwrap();
+            });
+        }
+
+        #[bench]
         fn bench_insert_million_one_second_timeouts(b: &mut Bencher) {
             let mut pendulum = PendulumBuilder::default()
                 .with_init_capacity(1_000_000)
