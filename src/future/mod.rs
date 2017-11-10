@@ -65,6 +65,23 @@ impl Default for TimerBuilder {
 /// Indicates a timeout has occurred.
 pub struct TimedOut;
 
+/// Convenience enum for mapping an `Item`/`Error` to something implementing `From<TimedOut>`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TimeoutStatus<T> {
+    /// Original item/error was received.
+    Original(T),
+    /// Timeout item/error was received.
+    TimedOut
+}
+
+impl<T> From<TimedOut> for TimeoutStatus<T> {
+    fn from(_: TimedOut) -> TimeoutStatus<T> {
+        TimeoutStatus::TimedOut
+    }
+}
+
+//--------------------------------------------------------------//
+
 /// `Timeout` future that will ensure an item or error is yielded after at least `Duration`.
 pub struct Timeout<F> {
     opt_sleep: Option<Sleep>,
@@ -515,17 +532,21 @@ fn try_push<T>(queue: &SegQueue<T>, len: &AtomicUsize, capacity: usize, item: T)
 
 #[cfg(test)]
 mod tests {
-    use super::{TimerBuilder};
+    use super::{TimerBuilder, TimeoutStatus};
 
     use std::time::{Duration};
 
     use futures::{Future, Stream};
+    use futures::sync::mpsc::{self, UnboundedReceiver};
+    use futures::future;
 
     #[test]
     fn positive_sleep_wakes_on_milli() {
         let timer = TimerBuilder::default()
             .build();
-        let sleep = timer.sleep(Duration::from_millis(50)).unwrap();
+        let sleep = timer
+            .sleep(Duration::from_millis(50))
+            .unwrap();
     
         sleep.wait().unwrap();
     }
@@ -534,7 +555,9 @@ mod tests {
     fn positive_sleep_wakes_on_nano() {
         let timer = TimerBuilder::default()
             .build();
-        let sleep = timer.sleep(Duration::new(0, 1)).unwrap();
+        let sleep = timer
+            .sleep(Duration::new(0, 1))
+            .unwrap();
     
         sleep.wait().unwrap();
     }
@@ -543,7 +566,9 @@ mod tests {
     fn positive_sleep_wakes_on_zero() {
         let timer = TimerBuilder::default()
             .build();
-        let sleep = timer.sleep(Duration::new(0, 0)).unwrap();
+        let sleep = timer
+            .sleep(Duration::new(0, 0))
+            .unwrap();
     
         sleep.wait().unwrap();
     }
@@ -552,10 +577,87 @@ mod tests {
     fn positive_sleep_stream_yields_twice() {
         let timer = TimerBuilder::default()
             .build();
-        let mut stream = timer.sleep_stream(Duration::from_millis(50)).unwrap()
+        let mut stream = timer
+            .sleep_stream(Duration::from_millis(50))
+            .unwrap()
             .wait();
 
         stream.next().unwrap().unwrap();
         stream.next().unwrap().unwrap();
+    }
+
+    #[test]
+    fn positive_heartbeat_sends_timeout() {
+        let timer = TimerBuilder::default()
+            .build();
+        let (_send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
+        let mut stream = timer
+            .heartbeat(Duration::from_millis(50), recv)
+            .unwrap()
+            .wait();
+
+        assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap());
+        assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap());
+    }
+
+    #[test]
+    fn positive_heartbeat_sends_item() {
+        let timer = TimerBuilder::default()
+            .build();
+        let (send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
+        send.unbounded_send(TimeoutStatus::Original(())).unwrap();
+        send.unbounded_send(TimeoutStatus::Original(())).unwrap();
+
+        let mut stream = timer
+            .heartbeat(Duration::from_millis(50), recv)
+            .unwrap()
+            .wait();
+
+        assert_eq!(TimeoutStatus::Original(()), stream.next().unwrap().unwrap());
+        assert_eq!(TimeoutStatus::Original(()), stream.next().unwrap().unwrap());
+    }
+
+    #[test]
+    fn positive_heartbeat_send_item_and_timeout() {
+        let timer = TimerBuilder::default()
+            .build();
+        let (send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
+        send.unbounded_send(TimeoutStatus::Original(())).unwrap();
+        send.unbounded_send(TimeoutStatus::Original(())).unwrap();
+
+        let mut stream = timer
+            .heartbeat(Duration::from_millis(50), recv)
+            .unwrap()
+            .wait();
+
+        assert_eq!(TimeoutStatus::Original(()), stream.next().unwrap().unwrap());
+        assert_eq!(TimeoutStatus::Original(()), stream.next().unwrap().unwrap());
+        assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap());
+    }
+
+    #[test]
+    fn positive_timeout_times_out() {
+        let timer = TimerBuilder::default()
+            .build();
+        let result = timer
+            .timeout(Duration::from_millis(50), future::empty::<(), TimeoutStatus<()>>())
+            .unwrap()
+            .wait();
+
+        assert_eq!(TimeoutStatus::TimedOut, result.unwrap_err());
+    }
+
+    #[test]
+    fn positive_timeout_stream_times_out() {
+        let timer = TimerBuilder::default()
+            .build();
+        let (_send, recv): (_, UnboundedReceiver<()>) = mpsc::unbounded();
+        let mut stream = timer
+            .timeout_stream(Duration::from_millis(50), recv.map_err(TimeoutStatus::Original))
+            .unwrap()
+            .wait();
+
+        assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap_err());
+        assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap_err());
     }
 }

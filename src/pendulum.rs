@@ -106,7 +106,7 @@ impl Default for PendulumBuilder {
 
 //--------------------------------------------------------------//
 
-/// Token which is used to associated items inserted into the `Pendulum`.
+/// Token which is used to associate items inserted into the `Pendulum`.
 #[derive(Copy, Clone)]
 pub struct Token {
     token: usize
