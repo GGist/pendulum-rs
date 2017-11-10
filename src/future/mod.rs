@@ -1,7 +1,5 @@
 //! Futures based runtime for a `Pendulum`.
 
-use std::time::SystemTime;
-use std::sync::atomic::AtomicBool;
 use futures::Stream;
 use std::sync::atomic::{Ordering, AtomicUsize};
 use pendulum::Token;
@@ -64,18 +62,109 @@ impl Default for TimerBuilder {
 
 //--------------------------------------------------------------//
 
-/// `Interval` stream that will continuously yield results after some `Duration`.
-pub struct Interval {
-    sleep: Sleep
+/// Indicates a timeout has occurred.
+pub struct TimedOut;
+
+/// `Timeout` future that will ensure an item or error is yielded after at least `Duration`.
+pub struct Timeout<F> {
+    opt_sleep: Option<Sleep>,
+    future: F
 }
 
-impl Interval {
-    fn new(sleep: Sleep) -> Interval {
-        Interval{ sleep: sleep }
+impl<F> Future for Timeout<F> where F: Future, F::Error: From<TimedOut> {
+    type Item = F::Item;
+    type Error = F::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let opt_poll_result = self.opt_sleep.as_mut().map(Future::poll);
+
+        match opt_poll_result {
+            Some(Ok(Async::Ready(()))) => {
+                // Timeout is up, drop the sleep object early
+                self.opt_sleep.take();
+
+                Err(TimedOut.into())
+            },
+            Some(_) => {
+                // Timeout is not up, poll the future
+                self.future.poll()
+            },
+            None => {
+                // Timeout was already up
+                Err(TimedOut.into())
+            }
+        }
     }
 }
 
-impl Stream for Interval {
+//--------------------------------------------------------------//
+
+/// `TimeoutStream` that will ensure an item or error is yielded after at least `Duration`.
+pub struct TimeoutStream<S> {
+    sleep: Sleep,
+    stream: S
+}
+
+impl<S> Stream for TimeoutStream<S> where S: Stream, S::Error: From<TimedOut> {
+    type Item = S::Item;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        // Check if our sleep is up
+        let sleep_result = self.sleep.poll();
+
+        match sleep_result {
+            Ok(Async::Ready(())) => {
+                // Timed out, send a timed out error
+                Err(TimedOut.into())
+            },
+            _ => self.stream.poll()
+        }
+    }
+}
+
+//--------------------------------------------------------------//
+
+/// `Heartbeat` that will ensure an item is yielded after at least `Duration`.
+pub struct Heartbeat<S> {
+    sleep: Sleep,
+    stream: S
+}
+
+impl<S> Stream for Heartbeat<S> where S: Stream, S::Item: From<TimedOut> {
+    type Item = S::Item;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        // Check if our sleep is up
+        let sleep_result = self.sleep.poll();
+
+        match sleep_result {
+            Ok(Async::Ready(())) => {
+                // Timed our, restart sleep and send a timed out object
+                self.sleep.restart();
+
+                Ok(Async::Ready(Some(TimedOut.into())))
+            },
+            _ => self.stream.poll()
+        }
+    }
+}
+
+//--------------------------------------------------------------//
+
+/// `SleepStream` that will wait `Duration` before each yield.
+pub struct SleepStream {
+    sleep: Sleep
+}
+
+impl SleepStream {
+    fn new(sleep: Sleep) -> SleepStream {
+        SleepStream{ sleep: sleep }
+    }
+}
+
+impl Stream for SleepStream {
     type Item = ();
     type Error = ();
 
@@ -92,22 +181,23 @@ impl Stream for Interval {
 
 //--------------------------------------------------------------//
 
-/// `Sleep` future that will make itself available after some `Duration`.
+/// `Sleep` future that will wait `Duration` before yielding.
 pub struct Sleep {
-    mapping: Arc<Mapping>,
+    mapping: usize,
     duration: Duration,
+    started: Instant,
     sent_task: Option<Task>,
     futures: Timer
 }
 
 impl Sleep {
-    fn new(mapping: Arc<Mapping>, duration: Duration, futures: Timer) -> Sleep {
-        Sleep{ mapping: mapping, duration: duration, sent_task: None, futures: futures }
+    fn new(mapping: usize, duration: Duration, futures: Timer) -> Sleep {
+        Sleep{ mapping: mapping, duration: duration, started: Instant::now(), sent_task: None, futures: futures }
     }
 
     fn restart(&mut self) {
         self.sent_task = None;
-        self.mapping.complete.store(false, Ordering::Release);
+        self.started = Instant::now();
     }
 }
 
@@ -117,7 +207,7 @@ impl Future for Sleep {
 
     fn poll(&mut self) -> Poll<(), ()> {
         // Check if we have hit our timeout
-        if self.mapping.complete.load(Ordering::Acquire) {
+        if Instant::now().duration_since(self.started) >= self.duration {
             return Ok(Async::Ready(()))
         }
 
@@ -128,7 +218,7 @@ impl Future for Sleep {
         if should_send_create {
             // Try to queue up a create request
             let sent = self.futures.inner.try_push_create_timer(CreateTimeout{
-                mapping: self.mapping.clone(), duration: self.duration, task: task::current() });
+                mapping: self.mapping, duration: self.duration, started: self.started, task: task::current() });
 
             // Check if we were able to send it through
             if !sent {
@@ -152,28 +242,28 @@ impl Drop for Sleep {
         // Check if we should push a delete request (if we never sent the request, dont bother)
         if self.sent_task.is_some() {
             // Check if we can push a delete request (if theres room in the queue)
-            let sent = self.futures.inner.try_push_delete_timer(DeleteTimeout{ mapping: self.mapping.clone() });
+            let sent = self.futures.inner.try_push_delete_timer(DeleteTimeout{ mapping: self.mapping });
 
             if !sent {
                 warn!("Couldnt Send A Delete Timeout Request From Sleep; Backing Thread May Be Running Slow");
 
                 // Couldnt get the delete request to go through, thats fine, just make
                 // sure we free our mapping, timer will lazily get cleaned up
-                self.futures.inner.return_mapping(self.mapping.clone());
+                self.futures.inner.return_mapping(self.mapping);
             } else {
                 // Delete went through, unpark the backing thread (backing thread will return our mapping)
                 self.futures.thread.unpark();
             }
         } else {
             // Never sent the create request, make our mapping available
-            self.futures.inner.return_mapping(self.mapping.clone());
+            self.futures.inner.return_mapping(self.mapping);
         }
     }
 }
 
 //--------------------------------------------------------------//
 
-/// Timer for which different futures based timers can be created.
+/// `Timer` for which different futures based timers can be created.
 #[derive(Clone)]
 pub struct Timer {
     inner:       Arc<InnerTimer>,
@@ -201,13 +291,31 @@ impl Timer {
         })
     }
 
-    /// Create an `Interval` future that will continuously become available for the given duration.
-    pub fn interval(&self, duration: Duration) -> PendulumResult<Interval, ()> {
-        self.sleep(duration).map(Interval::new)
+    /// Create a `SleepStream` that will continuously become available for the given duration.
+    pub fn sleep_stream(&self, duration: Duration) -> PendulumResult<SleepStream, ()> {
+        self.sleep(duration).map(SleepStream::new)
+    }
+
+    /// Create a `Timeout` future to raise an error if the given future doesnt complete before the given duration.
+    pub fn timeout<F>(&self, duration: Duration, future: F) -> PendulumResult<Timeout<F>, ()>
+        where F: Future, F::Error: From<TimedOut> {
+        self.sleep(duration).map(|sleep| Timeout{ opt_sleep: Some(sleep), future: future })
+    }
+
+    /// Create a `TimeoutStream` that will raise an error if an item is not yielded before the given duration.
+    pub fn timeout_stream<S>(&self, duration: Duration, stream: S) -> PendulumResult<TimeoutStream<S>, ()>
+        where S: Stream, S::Error: From<TimedOut> {
+        self.sleep(duration).map(|sleep| TimeoutStream{ sleep: sleep, stream: stream })
+    }
+
+    /// Create a `Heartbeat` stream that will yield an item if the stream doesnt yield one before the given duration.
+    pub fn heartbeat<S>(&self, duration: Duration, stream: S) -> PendulumResult<Heartbeat<S>, ()>
+        where S: Stream, S::Item: From<TimedOut> {
+        self.sleep(duration).map(|sleep| Heartbeat{ sleep: sleep, stream: stream })
     }
 
     // Validate that the timeout is valid, and see if there is room (get a mapping)
-    fn validate_request(&self, duration: Duration) -> PendulumResult<Arc<Mapping>, ()> {
+    fn validate_request(&self, duration: Duration) -> PendulumResult<usize, ()> {
         if duration > self.max_timeout {
             Err(PendulumError::new((), PendulumErrorKind::MaxCapacityReached))
         } else {
@@ -238,26 +346,35 @@ fn run_pendulum_timer(inner: Arc<InnerTimer>, builder: PendulumBuilder) {
         while let Some(request) = inner.try_pop_request() {
             match request {
                 TimeoutRequest::Create(create_request) => {
-                    // Push the request onto the pendulum, client should have taken care of checking for max
-                    // timeout, and they got a token, so we know we should have capacity for the timer
-                    let token = pendulum.insert_timeout(create_request.duration, (create_request.task, create_request.mapping.clone()))
-                        .expect("pendulum: Failed To Push Timeout Onto Pendulum");
+                    let time_to_schedule = current_time.duration_since(create_request.started);
+                    let real_timeout = create_request.duration.checked_sub(time_to_schedule).unwrap_or(Duration::new(0, 0));
 
-                    // Push the mapping to our table
-                    // Dont panic if a mapping already existed in the table, client wasnt able to
-                    // push a delete request which is fine (or they updated their Task object!!!)
-                    mapping_table.insert(create_request.mapping.mapping, token);
+                    if real_timeout == Duration::new(0, 0) {
+                        create_request.task.notify()
+                    } else {
+                        // Push the request onto the pendulum, client should have taken care of checking for max
+                        // timeout, and they got a token, so we know we should have capacity for the timer
+                        let token = pendulum.insert_timeout(real_timeout, create_request.task)
+                            .expect("pendulum: Failed To Push Timeout Onto Pendulum");
+
+                        // Push the mapping to our table
+                        // Dont panic if a mapping already existed in the table, client wasnt able to
+                        // push a delete request which is fine (or they updated their Task object!!!)
+                        mapping_table.insert(create_request.mapping, token);
+                    }
                 },
                 TimeoutRequest::Delete(delete_request) => {
                     // Remove the mapping from our table
-                    let mapping = delete_request.mapping.mapping;
-                    let token = mapping_table.remove(&mapping)
-                        .unwrap_or_else(|| panic!("pendulum: Value {:?} Had No Mapping", mapping));
+                    let mapping = delete_request.mapping;
 
-                    // If a client went to delete the request, and they pushed into the delete queue, but then
-                    // the backing timer saw that the timeout was triggered, then this timeout may not be in
-                    // the pendulum anymore, so thats fine, dont unrwap here
-                    pendulum.remove_timeout(token);
+                    // If we had a mapping, then remove it, otherwise, scheduling time may have taken up their full timeout,
+                    // in which case, we notified them immediately and never inserted the timeout into the pendulum
+                    if let Some(token) = mapping_table.remove(&mapping) {
+                        // If a client went to delete the request, and they pushed into the delete queue, but then
+                        // the backing timer saw that the timeout was triggered, then this timeout may not be in
+                        // the pendulum anymore, so thats fine, dont unrwap here
+                        pendulum.remove_timeout(token);
+                    }
 
                     // Push the mapping back to the queue so someone else can use it; if the client wasnt able to
                     // push to the delete queue because it was full, they would have pushed the mapping back themselves
@@ -280,8 +397,7 @@ fn run_pendulum_timer(inner: Arc<InnerTimer>, builder: PendulumBuilder) {
         leftover_tick = duration_since_last_tick;
         
         // Expire as many timeouts as we can
-        while let Some((task, mapping)) = pendulum.expired_timeout() {
-            mapping.complete.store(true, Ordering::Release);
+        while let Some(task) = pendulum.expired_timeout() {
             task.notify()
         }
 
@@ -299,19 +415,14 @@ enum TimeoutRequest {
 }
 
 struct CreateTimeout {
-    mapping: Arc<Mapping>,
+    mapping: usize,
     duration: Duration,
+    started: Instant,
     task: Task
 }
 
 struct DeleteTimeout {
-    mapping: Arc<Mapping>
-}
-
-#[derive(Debug)]
-struct Mapping {
-    mapping: usize,
-    complete: AtomicBool
+    mapping: usize
 }
 
 struct InnerTimer {
@@ -321,7 +432,7 @@ struct InnerTimer {
     // to delete the timer, but our delete queue is full, we can just push the mapping on the queue, forget
     // about deleting it, and when either the timer expires, or someone else comes along to re-use that
     // mapping, the timer wheel thread will remove the token associated with the mapping first (if it exists).
-    mapping_queue: SegQueue<Arc<Mapping>>,
+    mapping_queue: SegQueue<usize>,
     // We CANT separate this our to a create queue and delete queue, because there is a case where, we are processing create
     // requests happening AFTER processing delete requests, and a client pushes a delete request 
     // Tried seperating out to a create queue and delete queue, the problem there is if a client pushes to the create
@@ -342,8 +453,7 @@ impl InnerTimer {
         // Generate a bunch of mappings that clients can use as proxy `Token`s
         let mut next_mapping = 0;
         for _ in 0..timer_capacity {
-            let mapping = Mapping{ mapping: next_mapping, complete: AtomicBool::new(false) };
-            mapping_queue.push(Arc::new(mapping));
+            mapping_queue.push(next_mapping);
 
             next_mapping += 1;
         }
@@ -358,17 +468,14 @@ impl InnerTimer {
     }
 
     /// Attempt to retrieve a mapping, which is required for creating/deleting a timer.
-    pub fn try_retrieve_mapping(&self) -> Option<Arc<Mapping>> {
+    pub fn try_retrieve_mapping(&self) -> Option<usize> {
         self.mapping_queue.try_pop()
     }
 
     /// Clients should only call this if they were unable to issue a delete timer request.
     /// 
     /// Backing thread should call this after processing a delete timer request.
-    pub fn return_mapping(&self, mapping: Arc<Mapping>) {
-        // Reset the mapping to make sure complete is false for the next person using it
-        mapping.complete.store(false, Ordering::Release);
-
+    pub fn return_mapping(&self, mapping: usize) {
         self.mapping_queue.push(mapping)
     }
 
@@ -410,11 +517,9 @@ fn try_push<T>(queue: &SegQueue<T>, len: &AtomicUsize, capacity: usize, item: T)
 mod tests {
     use super::{TimerBuilder};
 
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration};
 
     use futures::{Future, Stream};
-
-    use PendulumBuilder;
 
     #[test]
     fn positive_sleep_wakes_on_milli() {
@@ -444,13 +549,13 @@ mod tests {
     }
 
     #[test]
-    fn positive_interval_yields_twice() {
+    fn positive_sleep_stream_yields_twice() {
         let timer = TimerBuilder::default()
             .build();
-        let mut interval = timer.interval(Duration::from_millis(50)).unwrap()
+        let mut stream = timer.sleep_stream(Duration::from_millis(50)).unwrap()
             .wait();
 
-        interval.next().unwrap().unwrap();
-        interval.next().unwrap().unwrap();
+        stream.next().unwrap().unwrap();
+        stream.next().unwrap().unwrap();
     }
 }
