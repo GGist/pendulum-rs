@@ -1,0 +1,15 @@
+[package]
+name = "pendulum"
+version = "0.1.0"
+authors = ["GGist <amiller4421@gmail.com>"]
+
+[features]
+default = ["future"]
+future  = ["crossbeam", "futures"]
+
+[dependencies]
+log         = "0.3"
+slab        = "0.4"
+
+crossbeam   = { version = "0.3", optional = true }
+futures     = { version = "0.1", optional = true }
