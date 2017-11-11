@@ -1,5 +1,5 @@
 
-//! ## Pendulum Usage:
+//! ## Pendulum Example:
 //! 
 //! ```rust
 //! extern crate pendulum;
