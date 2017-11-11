@@ -478,9 +478,13 @@ fn run_pendulum_timer(inner: Arc<InnerTimer>, builder: PendulumBuilder) {
             let total_time = current_time.duration_since(started);
 
             if total_time < duration {
+                let requeue_duration = duration - total_time;
+
                 // Edge case: Task is not really finished, time between updating our ticks,
                 // and queueing requests was too far apart, re-queue with the difference
-                let token = pendulum.insert_timeout(duration - total_time, (task, started, duration, mapping))
+                warn!("Task Was Ready Before Duration Of {:?} Was Up, Leftover Duration Was {:?}; Re-Queueing", duration, requeue_duration);
+
+                let token = pendulum.insert_timeout(requeue_duration, (task, started, duration, mapping))
                     .expect("pendulum: Failed To Re-Push Timeout Onto Pendulum");
 
                 mapping_table.insert(mapping, token);
