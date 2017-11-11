@@ -18,6 +18,57 @@ extern crate pendulum;
 
 ## Examples
 
+Usage of `Timer` runtime:
+```
+extern crate pendulum;
+extern crate futures;
+
+use std::time::Duration;
+
+use futures::Stream;
+use futures::sync::mpsc;
+
+use pendulum::future::{TimerBuilder, TimedOut};
+
+#[derive(Debug, PartialEq, Eq)]
+enum PeerMessage {
+    KeepAlive,
+    DoSomething
+}
+
+impl From<TimedOut> for PeerMessage {
+    fn from(_: TimedOut) -> PeerMessage {
+        PeerMessage::KeepAlive
+    }
+}
+
+fn main() {
+    // Create a timer with the default configuration
+    let timer = TimerBuilder::default()
+        .build();
+
+    // Assume some other part of the application sends messages to some peer
+    let (send, recv) = mpsc::unbounded();
+
+    // Application sent the peer a single message
+    send.unbounded_send(PeerMessage::DoSomething)
+        .unwrap();
+
+    // Wrap the receiver portion (a `Stream`), in a `Heartbeat` stream
+    let mut heartbeat = timer.heartbeat(Duration::from_millis(100), recv)
+        .unwrap()
+        .wait();
+
+    // Should receive the applications message
+    assert_eq!(PeerMessage::DoSomething, heartbeat.next().unwrap().unwrap());
+
+    // Application only sent one message, timer will continuously send keep alives
+    // if 100 ms goes by without the original receiver receiving any messages
+    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+}
+```
+
 Usage of `Pendulum` data structure:
 ```
 extern crate pendulum;
@@ -53,49 +104,6 @@ fn main() {
     
     // If we tried to remove the timeout using the token, we get None (already expired)
     assert_eq!(None, pendulum.remove_timeout(token));
-}
-```
-
-Usage of `Timer` runtime:
-```
-extern crate pendulum;
-extern crate futures;
-
-use std::time::Duration;
-
-use futures::Stream;
-use futures::sync::mpsc;
-
-use pendulum::future::{TimerBuilder, TimedOut};
-
-#[derive(Debug, PartialEq, Eq)]
-enum PeerMessage {
-    KeepAlive,
-    DoSomething
-}
-
-impl From<TimedOut> for PeerMessage {
-    fn from(_: TimedOut) -> PeerMessage {
-        PeerMessage::KeepAlive
-    }
-}
-
-fn main() {
-    // Create a timer with the default configuration
-    let timer = TimerBuilder::default()
-        .build();
-
-    let (send, recv) = mpsc::unbounded();
-    send.unbounded_send(PeerMessage::DoSomething)
-        .unwrap();
-
-    let mut heartbeat = timer.heartbeat(Duration::from_millis(100), recv)
-        .unwrap()
-        .wait();
-
-    assert_eq!(PeerMessage::DoSomething, heartbeat.next().unwrap().unwrap());
-    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
-    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
 }
 ```
 
