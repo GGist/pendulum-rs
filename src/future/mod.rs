@@ -30,15 +30,23 @@
 //!     let timer = TimerBuilder::default()
 //!         .build();
 //! 
+//!     // Assume some other part of the application sends messages to some peer
 //!     let (send, recv) = mpsc::unbounded();
+//! 
+//!     // Application sent the peer a single message
 //!     send.unbounded_send(PeerMessage::DoSomething)
 //!         .unwrap();
 //! 
+//!     // Wrap the receiver portion (a `Stream`), in a `Heartbeat` stream
 //!     let mut heartbeat = timer.heartbeat(Duration::from_millis(100), recv)
 //!         .unwrap()
 //!         .wait();
 //! 
+//!     // Should receive the applications message
 //!     assert_eq!(PeerMessage::DoSomething, heartbeat.next().unwrap().unwrap());
+//! 
+//!     // Application only sent one message, timer will continuously send keep alives
+//!     // if 100 ms goes by without the original receiver receiving any messages
 //!     assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
 //!     assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
 //! }
