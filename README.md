@@ -18,8 +18,8 @@ extern crate pendulum;
 
 ## Examples
 
-Usage of `Timer` runtime:
-```
+Usage of the futures base `Timer` runtime:
+```rust
 extern crate pendulum;
 extern crate futures;
 
@@ -69,8 +69,8 @@ fn main() {
 }
 ```
 
-Usage of `Pendulum` data structure:
-```
+Usage of the `Pendulum` data structure:
+```rust
 extern crate pendulum;
 
 use std::time::Duration;
