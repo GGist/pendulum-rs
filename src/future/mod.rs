@@ -400,23 +400,49 @@ fn run_pendulum_timer(inner: Arc<InnerTimer>, builder: PendulumBuilder) {
     let mut mapping_table: HashMap<usize, Token> = HashMap::with_capacity(pendulum.max_capacity());
 
     loop {
-        // Get an updated instant, so we can accurately get a tts for create requests
         current_time = Instant::now();
+
+        // Tick the pendulum as much as we can
+        // Important to do this before processing requests so that reuqests dont get any "free" ticks on them.
+        let mut duration_since_last_tick = current_time.duration_since(last_tick_time) + leftover_tick; 
+        while duration_since_last_tick >= pendulum.ticker().tick_duration() {
+            duration_since_last_tick -= pendulum.ticker().tick_duration();
+
+            pendulum.ticker().tick();
+            last_tick_time = current_time;
+        }
+        // Save the leftovers...
+        // TODO: Move this logic into the pendulum (provide a duration on the tick method???)
+        leftover_tick = duration_since_last_tick;
 
         // Go through all available requests to process them
         while let Some(request) = inner.try_pop_request() {
             match request {
                 TimeoutRequest::Create(create_request) => {
+                    // Update our current time to guarantee it is after the started Instant of the request
+                    // (Request could have been queued while we were processing other requests, after we
+                    // updated our current time above)
+                    current_time = Instant::now();
+
                     let time_to_schedule = current_time.duration_since(create_request.started);
                     let real_timeout = create_request.duration.checked_sub(time_to_schedule).unwrap_or(Duration::new(0, 0));
 
                     if real_timeout == Duration::new(0, 0) {
                         create_request.task.notify()
                     } else {
+                        // Add in the duration since last tick, in case it took a while to get here after updating our tick
+                        // Could still be the case that Instant jumps forward before we can insert our timeout, we handle
+                        // re-queueing in our expiration logic as an edge case, this addition to the timeout just reduces
+                        // the chance for that edge case
+                        duration_since_last_tick = current_time.duration_since(last_tick_time) + leftover_tick; 
+                        let accurate_real_timeout = real_timeout + duration_since_last_tick;
+
                         // Push the request onto the pendulum, client should have taken care of checking for max
                         // timeout, and they got a token, so we know we should have capacity for the timer
-                        let token = pendulum.insert_timeout(real_timeout, create_request.task)
-                            .expect("pendulum: Failed To Push Timeout Onto Pendulum");
+                        let token = pendulum.insert_timeout(
+                            accurate_real_timeout,
+                            (create_request.task, create_request.started, create_request.duration, create_request.mapping)
+                        ).expect("pendulum: Failed To Push Timeout Onto Pendulum");
 
                         // Push the mapping to our table
                         // Dont panic if a mapping already existed in the table, client wasnt able to
@@ -444,22 +470,24 @@ fn run_pendulum_timer(inner: Arc<InnerTimer>, builder: PendulumBuilder) {
             }
         }
 
-        // Tick the pendulum as much as we can
-        let mut duration_since_last_tick = current_time.duration_since(last_tick_time) + leftover_tick; 
-        while duration_since_last_tick >= pendulum.ticker().tick_duration() {
-            duration_since_last_tick -= pendulum.ticker().tick_duration();
+        // Update current time for expiration checking
+        current_time = Instant::now();
 
-            pendulum.ticker().tick();
-            // Update our last tick time, could call SystemTime::now here, but may not need to be that precise
-            last_tick_time = current_time;
-        }
-        // Save the leftovers...
-        // TODO: Move this logic into the pendulum (provide a duration on the tick method???)
-        leftover_tick = duration_since_last_tick;
-        
         // Expire as many timeouts as we can
-        while let Some(task) = pendulum.expired_timeout() {
-            task.notify()
+        while let Some((task, started, duration, mapping)) = pendulum.expired_timeout() {
+            let total_time = current_time.duration_since(started);
+
+            if total_time < duration {
+                // Edge case: Task is not really finished, time between updating our ticks,
+                // and queueing requests was too far apart, re-queue with the difference
+                let token = pendulum.insert_timeout(duration - total_time, (task, started, duration, mapping))
+                    .expect("pendulum: Failed To Re-Push Timeout Onto Pendulum");
+
+                mapping_table.insert(mapping, token);
+            } else {
+                // Task is really finished, notify them
+                task.notify()
+            }
         }
 
         // Park the thread until we think we can make another tick on our pendulum (or the client unparks us)
