@@ -3,6 +3,102 @@
 
 Data structures and runtimes for efficient timer management.
 
+## Usage
+
+```Cargo.toml```:
+```
+[dependencies]
+pendulum = "0.2"
+```
+
+```lib.rs/main.rs```:
+```
+extern crate pendulum;
+```
+
+## Examples
+
+Usage of `Pendulum` data structure:
+```
+extern crate pendulum;
+
+use std::time::Duration;
+use std::thread;
+
+use pendulum::PendulumBuilder;
+
+#[derive(Debug, PartialEq, Eq)]
+struct SomeData(usize);
+
+fn main() {
+    // Create a pendulum with mostly default configration
+    let mut pendulum = PendulumBuilder::default()
+        // Tick duration defines the resolution for our timer (all timeouts will be a multiple of this)
+        .with_tick_duration(Duration::from_millis(100))
+        .build();
+
+    // Insert a timeout and store the token, we can use this to cancel the timeout
+    let token = pendulum.insert_timeout(Duration::from_millis(50), SomeData(5)).unwrap();
+
+    // Tick our pendulum after the given duration (100 ms)
+    thread::sleep(pendulum.ticker().tick_duration());
+
+    // Tell the pendulum that it can perform a tick
+    pendulum.ticker().tick();
+
+    // Retrieve any expired timeouts
+    while let Some(timeout) = pendulum.expired_timeout() {
+        assert_eq!(SomeData(5), timeout);
+    }
+    
+    // If we tried to remove the timeout using the token, we get None (already expired)
+    assert_eq!(None, pendulum.remove_timeout(token));
+}
+```
+
+Usage of `Timer` runtime:
+```
+extern crate pendulum;
+extern crate futures;
+
+use std::time::Duration;
+
+use futures::Stream;
+use futures::sync::mpsc;
+
+use pendulum::future::{TimerBuilder, TimedOut};
+
+#[derive(Debug, PartialEq, Eq)]
+enum PeerMessage {
+    KeepAlive,
+    DoSomething
+}
+
+impl From<TimedOut> for PeerMessage {
+    fn from(_: TimedOut) -> PeerMessage {
+        PeerMessage::KeepAlive
+    }
+}
+
+fn main() {
+    // Create a timer with the default configuration
+    let timer = TimerBuilder::default()
+        .build();
+
+    let (send, recv) = mpsc::unbounded();
+    send.unbounded_send(PeerMessage::DoSomething)
+        .unwrap();
+
+    let mut heartbeat = timer.heartbeat(Duration::from_millis(100), recv)
+        .unwrap()
+        .wait();
+
+    assert_eq!(PeerMessage::DoSomething, heartbeat.next().unwrap().unwrap());
+    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+    assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+}
+```
+
 ## References
 
 * tokio-timer: https://github.com/tokio-rs/tokio-timer
