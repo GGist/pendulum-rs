@@ -1,9 +1,5 @@
 //! Errors that a `Pendulum` can produce.
 
-use std::fmt;
-use std::fmt::Debug;
-use std::fmt::Formatter;
-
 /// Result type for a `Pendulum`.
 pub type PendulumResult<T1, T2> = Result<T1, PendulumError<T2>>;
 

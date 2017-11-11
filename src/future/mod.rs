@@ -1,5 +1,49 @@
 //! Futures based runtime for a `Pendulum`.
 
+//! ## Heartbeat Example:
+//! 
+//! ```rust
+//! extern crate pendulum;
+//! extern crate futures;
+//! 
+//! use std::time::Duration;
+//! 
+//! use futures::Stream;
+//! use futures::sync::mpsc;
+//! 
+//! use pendulum::future::{TimerBuilder, TimedOut};
+//! 
+//! #[derive(Debug, PartialEq, Eq)]
+//! enum PeerMessage {
+//!     KeepAlive,
+//!     DoSomething
+//! }
+//! 
+//! impl From<TimedOut> for PeerMessage {
+//!     fn from(_: TimedOut) -> PeerMessage {
+//!         PeerMessage::KeepAlive
+//!     }
+//! }
+//! 
+//! fn main() {
+//!     // Create a timer with the default configuration
+//!     let timer = TimerBuilder::default()
+//!         .build();
+//! 
+//!     let (send, recv) = mpsc::unbounded();
+//!     send.unbounded_send(PeerMessage::DoSomething)
+//!         .unwrap();
+//! 
+//!     let mut heartbeat = timer.heartbeat(Duration::from_millis(100), recv)
+//!         .unwrap()
+//!         .wait();
+//! 
+//!     assert_eq!(PeerMessage::DoSomething, heartbeat.next().unwrap().unwrap());
+//!     assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+//!     assert_eq!(PeerMessage::KeepAlive, heartbeat.next().unwrap().unwrap());
+//! }
+//! ```
+
 use futures::Stream;
 use std::sync::atomic::{Ordering, AtomicUsize};
 use pendulum::Token;
