@@ -491,6 +491,21 @@ mod tests {
     }
 
     #[test]
+    fn negative_max_timeout_equal_to() {
+        let mut wheel = HashedWheelBuilder::default()
+            // Set max timeout indirectly...
+            .with_num_slots(1)
+            .with_tick_duration(Duration::from_millis(100))
+            .build();
+
+        let result = wheel.insert_timeout(Duration::from_millis(100), ());
+        match result.as_ref().map_err(PendulumError::kind) {
+            Err(&PendulumErrorKind::MaxTimeoutExceeded) => (),
+            _                                              => panic!("MaxTimeoutExceeded Not Returned")
+        }
+    }
+
+    #[test]
     fn negative_max_timeout_exceeded() {
         let mut wheel = HashedWheelBuilder::default()
             .with_max_timeout(Duration::from_millis(100))
