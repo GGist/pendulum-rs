@@ -29,7 +29,7 @@
 //! fn main() {
 //!     // Create a timer with the default configuration
 //!     let timer = TimerBuilder::default()
-//!         .build_hashed(HashedWheelBuilder::default());
+//!         .build(HashedWheelBuilder::default().build());
 //! 
 //!     // Assume some other part of the application sends messages to some peer
 //!     let (send, recv) = mpsc::unbounded();
@@ -53,7 +53,6 @@
 //! }
 //! ```
 
-use wheel::HashedWheelBuilder;
 use pendulum::Pendulum;
 use futures::Stream;
 use std::sync::atomic::{Ordering, AtomicUsize};
@@ -91,8 +90,9 @@ impl TimerBuilder {
     }
 
     /// Construct a `Timer` with the current configuration.
-    pub fn build_hashed(self, builder: HashedWheelBuilder) -> Timer {
-        Timer::with_hashed(self, builder)
+    pub fn build<P>(self, pendulum: P) -> Timer
+        where P: Pendulum<TimerItem> + Send + 'static {
+        Timer::new(self, pendulum)
     }
 }
 
@@ -332,12 +332,13 @@ pub struct Timer {
 
 impl Timer {
     /// Build a `Timer` using a `HashedWheel` internally.
-    pub fn with_hashed(builder: TimerBuilder, pendulum: HashedWheelBuilder) -> Timer {
+    pub fn new<P>(builder: TimerBuilder, pendulum: P) -> Timer
+        where P: Pendulum<TimerItem> + Send + 'static {
         let inner = Arc::new(InnerTimer::new(pendulum.max_capacity(), builder.channel_capacity()));
         let max_timeout = pendulum.max_timeout();
 
         let thread_inner = inner.clone();
-        let thread_handle = thread::spawn(move || run_pendulum_timer(thread_inner, pendulum.build())).thread().clone();
+        let thread_handle = thread::spawn(move || run_pendulum_timer(thread_inner, pendulum)).thread().clone();
 
         Timer{ inner: inner, thread: Arc::new(thread_handle), max_timeout: max_timeout }
     }
@@ -383,12 +384,25 @@ impl Timer {
     }
 }
 
+/// Item that the `Timer` will place inside the `Pendulum`.
+/// 
+/// Because type constructors are not available (yet), we have to tell users what type
+/// we will be placing into the `Pendulum` that they give us. So as to not leak any
+/// inner type information, we export this unconstructable type, for user type inference.
+#[derive(Debug)]
+pub struct TimerItem {
+    task: Task,
+    started: Instant,
+    duration: Duration,
+    mapping: usize
+}
+
 /// Run the background driver for a futures based pendulum.
 /// 
 /// Takes care of reading delete and create requests, as well as sending
 /// notification for expired requests.
 fn run_pendulum_timer<P>(inner: Arc<InnerTimer>, mut pendulum: P)
-    where P: Pendulum<(Task, Instant, Duration, usize)> {
+    where P: Pendulum<TimerItem> {
     let mut current_time;
     let mut last_tick_time = Instant::now();
     let mut leftover_tick = Duration::new(0, 0);
@@ -435,10 +449,10 @@ fn run_pendulum_timer<P>(inner: Arc<InnerTimer>, mut pendulum: P)
 
                         // Push the request onto the pendulum, client should have taken care of checking for max
                         // timeout, and they got a token, so we know we should have capacity for the timer
-                        let token = pendulum.insert_timeout(
-                            accurate_real_timeout,
-                            (create_request.task, create_request.started, create_request.duration, create_request.mapping)
-                        ).expect("pendulum: Failed To Push Timeout Onto Pendulum");
+                        let item = TimerItem{ task: create_request.task, started: create_request.started,
+                            duration: create_request.duration, mapping: create_request.mapping };
+                        let token = pendulum.insert_timeout(accurate_real_timeout, item)
+                            .expect("pendulum: Failed To Push Timeout Onto Pendulum");
 
                         // Push the mapping to our table
                         // Dont panic if a mapping already existed in the table, client wasnt able to
@@ -470,7 +484,7 @@ fn run_pendulum_timer<P>(inner: Arc<InnerTimer>, mut pendulum: P)
         current_time = Instant::now();
 
         // Expire as many timeouts as we can
-        while let Some((task, started, duration, mapping)) = pendulum.expired_timeout() {
+        while let Some(TimerItem{ task, started, duration, mapping }) = pendulum.expired_timeout() {
             let total_time = current_time.duration_since(started);
 
             if total_time < duration {
@@ -480,7 +494,8 @@ fn run_pendulum_timer<P>(inner: Arc<InnerTimer>, mut pendulum: P)
                 // and queueing requests was too far apart, re-queue with the difference
                 warn!("Task Was Ready Before Duration Of {:?} Was Up, Leftover Duration Was {:?}; Re-Queueing", duration, requeue_duration);
 
-                let token = pendulum.insert_timeout(requeue_duration, (task, started, duration, mapping))
+                let item = TimerItem{ task: task, started: started, duration: duration, mapping: mapping };
+                let token = pendulum.insert_timeout(requeue_duration, item)
                     .expect("pendulum: Failed To Re-Push Timeout Onto Pendulum");
 
                 mapping_table.insert(mapping, token);
@@ -617,7 +632,7 @@ mod tests {
     #[test]
     fn positive_sleep_wakes_on_milli() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let sleep = timer
             .sleep(Duration::from_millis(50))
             .unwrap();
@@ -628,7 +643,7 @@ mod tests {
     #[test]
     fn positive_sleep_wakes_on_nano() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let sleep = timer
             .sleep(Duration::new(0, 1))
             .unwrap();
@@ -639,7 +654,7 @@ mod tests {
     #[test]
     fn positive_sleep_wakes_on_zero() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let sleep = timer
             .sleep(Duration::new(0, 0))
             .unwrap();
@@ -650,7 +665,7 @@ mod tests {
     #[test]
     fn positive_sleep_stream_yields_twice() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let mut stream = timer
             .sleep_stream(Duration::from_millis(50))
             .unwrap()
@@ -663,7 +678,7 @@ mod tests {
     #[test]
     fn positive_heartbeat_sends_timeout() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let (_send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
         let mut stream = timer
             .heartbeat(Duration::from_millis(50), recv)
@@ -677,7 +692,7 @@ mod tests {
     #[test]
     fn positive_heartbeat_sends_item() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let (send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
         send.unbounded_send(TimeoutStatus::Original(())).unwrap();
         send.unbounded_send(TimeoutStatus::Original(())).unwrap();
@@ -694,7 +709,7 @@ mod tests {
     #[test]
     fn positive_heartbeat_send_item_and_timeout() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let (send, recv): (_, UnboundedReceiver<TimeoutStatus<()>>) = mpsc::unbounded();
         send.unbounded_send(TimeoutStatus::Original(())).unwrap();
         send.unbounded_send(TimeoutStatus::Original(())).unwrap();
@@ -712,7 +727,7 @@ mod tests {
     #[test]
     fn positive_timeout_times_out() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let result = timer
             .timeout(Duration::from_millis(50), future::empty::<(), TimeoutStatus<()>>())
             .unwrap()
@@ -724,7 +739,7 @@ mod tests {
     #[test]
     fn positive_timeout_stream_times_out() {
         let timer = TimerBuilder::default()
-            .build_hashed(HashedWheelBuilder::default());
+            .build(HashedWheelBuilder::default().build());
         let (_send, recv): (_, UnboundedReceiver<()>) = mpsc::unbounded();
         let mut stream = timer
             .timeout_stream(Duration::from_millis(50), recv.map_err(TimeoutStatus::Original))
