@@ -7,34 +7,34 @@
 //! use std::time::Duration;
 //! use std::thread;
 //! 
-//! use pendulum::PendulumBuilder;
+//! use pendulum::{Pendulum, HashedWheelBuilder};
 //! 
 //! #[derive(Debug, PartialEq, Eq)]
 //! struct SomeData(usize);
 //! 
 //! fn main() {
 //!     // Create a pendulum with mostly default configration
-//!     let mut pendulum = PendulumBuilder::default()
+//!     let mut wheel = HashedWheelBuilder::default()
 //!         // Tick duration defines the resolution for our timer (all timeouts will be a multiple of this)
 //!         .with_tick_duration(Duration::from_millis(100))
 //!         .build();
 //! 
 //!     // Insert a timeout and store the token, we can use this to cancel the timeout
-//!     let token = pendulum.insert_timeout(Duration::from_millis(50), SomeData(5)).unwrap();
+//!     let token = wheel.insert_timeout(Duration::from_millis(50), SomeData(5)).unwrap();
 //! 
-//!     // Tick our pendulum after the given duration (100 ms)
-//!     thread::sleep(pendulum.ticker().tick_duration());
+//!     // Tick our wheel after the given duration (100 ms)
+//!     thread::sleep(wheel.tick_duration());
 //! 
-//!     // Tell the pendulum that it can perform a tick
-//!     pendulum.ticker().tick();
+//!     // Tell the wheel that it can perform a tick
+//!     wheel.tick();
 //! 
 //!     // Retrieve any expired timeouts
-//!     while let Some(timeout) = pendulum.expired_timeout() {
+//!     while let Some(timeout) = wheel.expired_timeout() {
 //!         assert_eq!(SomeData(5), timeout);
 //!     }
 //!     
 //!     // If we tried to remove the timeout using the token, we get None (already expired)
-//!     assert_eq!(None, pendulum.remove_timeout(token));
+//!     assert_eq!(None, wheel.remove_timeout(token));
 //! }
 //! ```
 
@@ -53,5 +53,7 @@ pub mod error;
 pub mod future;
 
 mod pendulum;
+mod wheel;
 
-pub use pendulum::{Pendulum, PendulumBuilder, Token, PendulumTicker};
+pub use pendulum::{Pendulum, Token};
+pub use wheel::{HashedWheel, HashedWheelBuilder};

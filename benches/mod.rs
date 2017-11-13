@@ -8,37 +8,37 @@ mod benches {
     mod pendulum {
         use std::time::Duration;
 
-        use pendulum::{PendulumBuilder};
+        use pendulum::{Pendulum, HashedWheelBuilder};
         use test::Bencher;
 
         #[bench]
         fn bench_insert_single_one_second_timeout(b: &mut Bencher) {
-            let mut pendulum = PendulumBuilder::default()
+            let mut wheel = HashedWheelBuilder::default()
                 .build();
 
             b.iter(|| {
-                let token = pendulum.insert_timeout(Duration::new(1, 0), ()).unwrap();
-                pendulum.remove_timeout(token).unwrap();
+                let token = wheel.insert_timeout(Duration::new(1, 0), ()).unwrap();
+                wheel.remove_timeout(token).unwrap();
             });
         }
 
         #[bench]
         fn bench_insert_million_one_second_timeouts(b: &mut Bencher) {
-            let mut pendulum = PendulumBuilder::default()
+            let mut wheel = HashedWheelBuilder::default()
                 .with_init_capacity(1_000_000)
                 .build();
 
             b.iter(|| {
                 for _ in 0..1_000_000 {
-                    let token = pendulum.insert_timeout(Duration::new(1, 0), ()).unwrap();
-                    pendulum.remove_timeout(token).unwrap();
+                    let token = wheel.insert_timeout(Duration::new(1, 0), ()).unwrap();
+                    wheel.remove_timeout(token).unwrap();
                 }
             });
         }
 
         #[bench]
         fn bench_expire_million_one_second_timeouts(b: &mut Bencher) {
-            let mut pendulum = PendulumBuilder::default()
+            let mut wheel = HashedWheelBuilder::default()
                 .with_tick_duration(Duration::from_millis(100))
                 .with_num_slots(11)
                 .with_init_capacity(1_000_000)
@@ -46,17 +46,17 @@ mod benches {
                 .build();
 
             for _ in 0..1_000_000 {
-                pendulum.insert_timeout(Duration::new(1, 0), ()).unwrap();
+                wheel.insert_timeout(Duration::new(1, 0), ()).unwrap();
             }
 
             for _ in 0..11 {
-                pendulum.ticker().tick();
+                wheel.tick();
             }
 
             let mut timers_expired = 0;
             b.iter(|| {
                 while timers_expired < 1_000_000 {
-                    if pendulum.expired_timeout().is_some() {
+                    if wheel.expired_timeout().is_some() {
                         timers_expired += 1;
                     }
                 }
