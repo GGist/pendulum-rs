@@ -87,7 +87,12 @@ impl HashedWheelBuilder {
     /// Get the maximum timeout that was set.
     pub fn max_timeout(&self) -> Duration {
         self.max_timeout.unwrap_or_else(|| {
-            self.tick_duration * self.num_slots as u32
+            // Subtract 1 nanosecond, beacuse if a timeout is on a tick boundary,
+            // we always round up (due to accepting timeouts of duration 0), so
+            // the max timeout is just a nanosecond below the max theoretical timeout
+            (self.tick_duration * self.num_slots as u32)
+                .checked_sub(Duration::new(0, 1))
+                .unwrap_or(Duration::new(0, 0))
         })
     }
 
