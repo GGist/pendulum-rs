@@ -17,13 +17,6 @@ pub fn retrieve_token(token: Token) -> usize {
 
 //--------------------------------------------------------------//
 
-pub trait PendulumBuilder<P> {
-    fn build<T>() -> P
-        where P: ;
-}
-
-//--------------------------------------------------------------//
-
 /// Trait for working with generic timer wheel implementations.
 pub trait Pendulum<T> {
     /// Insert a timeout with the given duration and the given item into the `Pendulum`.
