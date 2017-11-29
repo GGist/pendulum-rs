@@ -288,7 +288,7 @@ impl Future for Sleep {
             } else {
                 // We were able to send the reuqest, store our task, unpark the thread
                 self.sent_task = Some(task::current());
-                self.futures.thread.unpark();
+                self.futures.thread.thread.unpark();
             }
         }
 
@@ -311,7 +311,7 @@ impl Drop for Sleep {
                 self.futures.inner.return_mapping(self.mapping);
             } else {
                 // Delete went through, unpark the backing thread (backing thread will return our mapping)
-                self.futures.thread.unpark();
+                self.futures.thread.thread.unpark();
             }
         } else {
             // Never sent the create request, make our mapping available
@@ -322,11 +322,25 @@ impl Drop for Sleep {
 
 //--------------------------------------------------------------//
 
+// When this is dropped, that means a `Timer`s Arc<InnerTimer> has been dropped previously,
+// we want the backing thread to get unparked so it can run and check if it can kill itself,
+// by checking if the strong count of Arc<InnerTimer> is 1 (it is the only entity with a handle
+// to it left).
+struct UnparkOnDropThread {
+    thread: Thread
+}
+
+impl Drop for UnparkOnDropThread {
+    fn drop(&mut self) {
+        self.thread.unpark();
+    }
+}
+
 /// `Timer` for which different futures based timers can be created.
 #[derive(Clone)]
 pub struct Timer {
     inner:       Arc<InnerTimer>,
-    thread:      Arc<Thread>,
+    thread:      Arc<UnparkOnDropThread>,
     max_timeout: Duration
 }
 
@@ -340,7 +354,7 @@ impl Timer {
         let thread_inner = inner.clone();
         let thread_handle = thread::spawn(move || run_pendulum_timer(thread_inner, pendulum)).thread().clone();
 
-        Timer{ inner: inner, thread: Arc::new(thread_handle), max_timeout: max_timeout }
+        Timer{ inner: inner, thread: Arc::new(UnparkOnDropThread{ thread: thread_handle }), max_timeout: max_timeout }
     }
 
     /// Create a `Sleep` future that will become available after the given duration.
@@ -501,13 +515,18 @@ fn run_pendulum_timer<P>(inner: Arc<InnerTimer>, mut pendulum: P)
                 mapping_table.insert(mapping, token);
             } else {
                 // Task is really finished, notify them
-                task.notify()
+                task.notify();
             }
         }
-
-        // Park the thread until we think we can make another tick on our pendulum (or the client unparks us)
-        let time_to_next_tick = pendulum.tick_duration() - leftover_tick;
-        thread::park_timeout(time_to_next_tick);
+        
+        // If all other instances of Arc<InnerTimer> were dropped, we can shutdown
+        if Arc::strong_count(&inner) == 1 {
+            break;
+        } else {
+            // Park the thread until we think we can make another tick on our pendulum (or the client unparks us)
+            let time_to_next_tick = pendulum.tick_duration() - leftover_tick;
+            thread::park_timeout(time_to_next_tick);
+        }
     }
 }
 
@@ -580,7 +599,7 @@ impl InnerTimer {
     /// 
     /// Backing thread should call this after processing a delete timer request.
     pub fn return_mapping(&self, mapping: usize) {
-        self.mapping_queue.push(mapping)
+        self.mapping_queue.push(mapping);
     }
 
     /// Attempt to enqueue a create timer request.
@@ -607,7 +626,7 @@ fn try_push<T>(queue: &SegQueue<T>, len: &AtomicUsize, capacity: usize, item: T)
         let queue_size = len.fetch_add(1, Ordering::AcqRel);
 
         if queue_size >= capacity {
-            len.fetch_sub(1, Ordering::Relaxed);
+            len.fetch_sub(1, Ordering::AcqRel);
             false
         } else {
             queue.push(item);
@@ -624,10 +643,78 @@ mod tests {
     use wheel::HashedWheelBuilder;
 
     use std::time::{Duration};
+    use std::sync::Arc;
+    use std::mem;
+    use std::thread;
 
     use futures::{Future, Stream};
     use futures::sync::mpsc::{self, UnboundedReceiver};
     use futures::future;
+
+    #[test]
+    fn positive_thread_shutdown_with_dropped_timer() {
+        // Create a timer with a large tick interval
+        let timer = TimerBuilder::default()
+            .build(HashedWheelBuilder::default()
+                .with_tick_duration(Duration::from_millis(10000))
+                .build()
+            );
+
+        assert_eq!(2, Arc::strong_count(&timer.inner));
+
+        // Grab a weak reference to the Arc
+        let weak = Arc::downgrade(&timer.inner);
+
+        // Force the backing thread to run at least once
+        thread::sleep(Duration::from_millis(50));
+        // Explicitly drop the timer
+        mem::drop(timer);
+        // Give the background thread time to realize the drop
+        thread::sleep(Duration::from_millis(50));
+
+        // Assert that we cant upgrade the weak (thread shutdown)
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn positive_thread_shutdown_with_dropped_clone() {
+        let timer_one = TimerBuilder::default()
+            .build(HashedWheelBuilder::default()
+                .with_tick_duration(Duration::from_millis(10000))
+                .build()
+            );
+        let timer_two = timer_one.clone();
+
+        assert_eq!(3, Arc::strong_count(&timer_one.inner));
+
+        let weak = Arc::downgrade(&timer_one.inner);
+
+        thread::sleep(Duration::from_millis(50));
+        mem::drop(timer_one);
+        mem::drop(timer_two);
+        thread::sleep(Duration::from_millis(50));
+
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn positive_thread_shutdown_with_dropped_sleep() {
+        let timer = TimerBuilder::default()
+            .build(HashedWheelBuilder::default().build());
+
+        let sleep = timer.sleep(Duration::from_millis(100))
+            .unwrap();
+
+        let weak = Arc::downgrade(&timer.inner);
+
+        thread::sleep(Duration::from_millis(50));
+        mem::drop(timer);
+        mem::drop(sleep);
+        thread::sleep(Duration::from_millis(50));
+
+        // Assert that we cant upgrade the weak
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn positive_sleep_wakes_on_milli() {
@@ -748,5 +835,24 @@ mod tests {
 
         assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap_err());
         assert_eq!(TimeoutStatus::TimedOut, stream.next().unwrap().unwrap_err());
+    }
+
+    #[test]
+    fn negative_thread_shutdown_with_existing_sleep() {
+        let timer = TimerBuilder::default()
+            .build(HashedWheelBuilder::default()
+                .with_tick_duration(Duration::from_millis(10000))
+                .build()
+            );
+        let sleep = timer.sleep(Duration::from_millis(100))
+            .unwrap();
+
+        assert_eq!(3, Arc::strong_count(&timer.inner));
+
+        thread::sleep(Duration::from_millis(50));
+        mem::drop(timer);
+        thread::sleep(Duration::from_millis(50));
+
+        assert_eq!(2, Arc::strong_count(&sleep.futures.inner));
     }
 }
