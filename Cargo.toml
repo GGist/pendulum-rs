@@ -1,6 +1,6 @@
 [package]
 name          = "pendulum"
-version       = "0.3.0"
+version       = "0.3.1"
 description   = "Hashed timer wheel with various runtimes"
 
 authors       = ["Andrew <amiller4421@gmail.com>"]
